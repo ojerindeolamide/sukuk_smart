@@ -3,7 +3,7 @@
 (define-data-var sukuk-symbol (string-ascii 8) "GSUKUK")
 (define-data-var sukuk-total-supply uint u0)   ;; Total sukuk issued
 (define-data-var sukuk-price uint u1000000)     ;; Price per sukuk in micro-STX (1 STX = 1,000,000 micro-STX)
-(define-data-var sukuk-maturity (response uint uint) (ok u0)) ;; Maturity timestamp
+(define-data-var sukuk-maturity (response uint uint) (err u0)) ;; Maturity timestamp (err = not set)
 (define-data-var total-subscribed uint u0)     ;; Total STX collected
 
 ;; Map: subscriber principal => {amount-sukuk: uint, stx-paid: uint}
@@ -26,17 +26,17 @@
     (assert-issuer)
     ;; maturity can only be set once
     (match (var-get sukuk-maturity)
-      success maturity (err ERR_ALREADY_SET_MATURITY)
-      error _ (ok (begin
+      (ok _) (err ERR_ALREADY_SET_MATURITY)
+      (err _) (begin
         (var-set sukuk-maturity (ok maturity-block-height))
         (var-set sukuk-total-supply total-supply)
-        success))))
+        (ok true)))))
 
 ;; Public subscription: send STX and receive sukuk units
 (define-public (subscribe-sukuk)
   (let (
         (price (var-get sukuk-price))
-        (sent (contract-call? .stx-transfer? tx-sender (as-contract tx-sender) price))
+        (sent (stx-transfer? price tx-sender (as-contract tx-sender)))
        )
     (begin
       (asserts! (is-ok sent) ERR_INSUFFICIENT_PAYMENT)
@@ -81,7 +81,7 @@
             ;; simple profit: 5% on principal
             (profit (/ (* paid u5) u100))
             (payout (+ paid profit))
-            (transfer-resp (contract-call? .stx-transfer? (as-contract tx-sender) tx-sender payout))
+            (transfer-resp (stx-transfer? payout (as-contract tx-sender) tx-sender))
           )
         (asserts! (is-ok transfer-resp) transfer-resp)
         ;; clear subscription
