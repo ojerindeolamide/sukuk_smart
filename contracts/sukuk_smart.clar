@@ -1,8 +1,11 @@
+;; Sukuk Smart Contract - Islamic Finance Compliant Bond Tokenization
+;; A Clarity smart contract for tokenized sukuk (Islamic bonds) on Stacks
+
 (define-data-var issuer principal tx-sender)  ;; Government issuer address
-(define-data-var sukuk-name (string-ascii 32) "Government Sukuk Fund")
-(define-data-var sukuk-symbol (string-ascii 8) "GSUKUK")
+(define-constant sukuk-name "Government Sukuk Fund")
+(define-constant sukuk-symbol "GSUKUK")
 (define-data-var sukuk-total-supply uint u0)   ;; Total sukuk issued
-(define-data-var sukuk-price uint u1000000)     ;; Price per sukuk in micro-STX (1 STX = 1,000,000 micro-STX)
+(define-constant sukuk-price u1000000)     ;; Price per sukuk in micro-STX (1 STX = 1,000,000 micro-STX)
 (define-data-var sukuk-maturity (optional uint) none) ;; Maturity timestamp
 (define-data-var total-subscribed uint u0)     ;; Total STX collected
 
@@ -15,11 +18,16 @@
 (define-constant ERR_NOT_MATURED u103)
 (define-constant ERR_ALREADY_SET_MATURITY u104)
 
+;; Helper: only issuer can call
+(define-private (assert-issuer)
+  (begin
+    (asserts! (is-eq tx-sender (var-get issuer)) (err ERR_NOT_ISSUER))
+    (ok true)))
+
 ;; Set sukuk parameters: maturity timestamp, total supply
 (define-public (configure-sukuk (maturity-block-height uint) (total-supply uint))
   (begin
-    ;; Only issuer can configure
-    (asserts! (is-eq tx-sender (var-get issuer)) (err ERR_NOT_ISSUER))
+    (try! (assert-issuer))
     ;; maturity can only be set once
     (asserts! (is-none (var-get sukuk-maturity)) (err ERR_ALREADY_SET_MATURITY))
     (var-set sukuk-maturity (some maturity-block-height))
@@ -29,7 +37,7 @@
 ;; Public subscription: send STX and receive sukuk units
 (define-public (subscribe-sukuk)
   (let (
-        (price (var-get sukuk-price))
+        (price sukuk-price)
         (sent (stx-transfer? price tx-sender (as-contract tx-sender)))
        )
     (begin
@@ -37,7 +45,7 @@
       (let (
             (current-subscribed (var-get total-subscribed))
             (new-total (+ current-subscribed price))
-            (unit-count (/ price price)) ;; always 1 sukuk per price
+            (unit-count u1) ;; always 1 sukuk per subscription
           )
         (var-set total-subscribed new-total)
         (match (map-get? subscribers {account: tx-sender})
@@ -46,10 +54,10 @@
                      { amount-sukuk: (+ (get amount-sukuk entry) unit-count)
                      , stx-paid:    (+ (get stx-paid entry) price) })
                    (ok unit-count))
-                (begin
-                  (map-insert subscribers {account: tx-sender}
-                     { amount-sukuk: unit-count, stx-paid: price })
-                  (ok unit-count))
+          (begin
+            (map-insert subscribers {account: tx-sender}
+               { amount-sukuk: unit-count, stx-paid: price })
+            (ok unit-count))
         )
       )
     )
@@ -72,12 +80,11 @@
       (asserts! (is-some entry) (err ERR_NO_SUBSCRIPTION))
       (let (
             (subscriber-data (unwrap! entry (err ERR_NO_SUBSCRIPTION)))
-            (units (get amount-sukuk subscriber-data))
             (paid (get stx-paid subscriber-data))
             ;; simple profit: 5% on principal
             (profit (/ (* paid u5) u100))
             (payout (+ paid profit))
-            (transfer-resp (as-contract (stx-transfer? payout tx-sender tx-sender)))
+            (transfer-resp (as-contract (stx-transfer? payout (as-contract tx-sender) tx-sender)))
           )
         (try! transfer-resp)
         ;; clear subscription
@@ -96,4 +103,4 @@
   (var-get total-subscribed))
 
 (define-read-only (get-terms)
-  { name: (var-get sukuk-name), symbol: (var-get sukuk-symbol), price: (var-get sukuk-price), maturity: (var-get sukuk-maturity) })
+  { name: sukuk-name, symbol: sukuk-symbol, price: sukuk-price, maturity: (var-get sukuk-maturity) })
