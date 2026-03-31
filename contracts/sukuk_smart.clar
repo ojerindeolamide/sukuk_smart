@@ -32,7 +32,7 @@
     ;; maturity can only be set once
     (asserts! (is-none (var-get sukuk-maturity)) ERR_ALREADY_SET_MATURITY)
     ;; Validate inputs: maturity must be in the future, supply must be positive
-    (asserts! (> maturity-block-height stacks-block-height) ERR_NOT_MATURED)
+    (asserts! (> maturity-block-height block-height) ERR_NOT_MATURED)
     (asserts! (> total-supply u0) ERR_NO_SUBSCRIPTION)
     (var-set sukuk-maturity (some maturity-block-height))
     (var-set sukuk-total-supply total-supply)
@@ -72,7 +72,7 @@
 ;; Check maturity
 (define-read-only (is-matured)
   (match (var-get sukuk-maturity)
-    m (>= stacks-block-height m)
+    m (>= block-height m)
     false))
 
 ;; Redeem sukuk after maturity: investor gets STX back plus profit share
