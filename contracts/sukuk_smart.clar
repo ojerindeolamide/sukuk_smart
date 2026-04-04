@@ -1,3 +1,4 @@
+;; Sukuk Smart Contract - Islamic Bond Tokenization
 ;; Government issuer address - using deployer as issuer
 (define-constant issuer tx-sender)
 
@@ -19,16 +20,20 @@
 (define-constant ERR_NO_SUBSCRIPTION u102)
 (define-constant ERR_NOT_MATURED u103)
 (define-constant ERR_ALREADY_SET_MATURITY u104)
+(define-constant ERR_INVALID_SUPPLY u105)
+(define-constant ERR_INVALID_MATURITY u106)
 
 ;; Private helper: check if caller is issuer
 (define-private (is-issuer)
   (is-eq tx-sender issuer))
 
-;; Set sukuk parameters: maturity timestamp, total supply
+;; Set sukuk parameters: maturity block height, total supply
 (define-public (configure-sukuk (maturity-block-height uint) (total-supply uint))
   (begin
+    (asserts! (is-issuer) (err ERR_NOT_ISSUER))
     (asserts! (is-none (var-get sukuk-maturity)) (err ERR_ALREADY_SET_MATURITY))
-    (asserts! (> total-supply u0) (err ERR_NO_SUBSCRIPTION))
+    (asserts! (> total-supply u0) (err ERR_INVALID_SUPPLY))
+    (asserts! (> maturity-block-height block-height) (err ERR_INVALID_MATURITY))
     (var-set sukuk-maturity (some maturity-block-height))
     (var-set sukuk-total-supply total-supply)
     (ok u1)))
@@ -66,7 +71,9 @@
 
 ;; Check maturity
 (define-read-only (is-matured)
-  true)
+  (match (var-get sukuk-maturity)
+    maturity (>= block-height maturity)
+    false))
 
 ;; Redeem sukuk after maturity: investor gets STX back plus profit share
 (define-public (redeem)
@@ -82,9 +89,8 @@
             (profit u0)
             (payout (+ paid profit))
             (caller tx-sender)
-            (transfer-resp (as-contract (stx-transfer? payout tx-sender caller)))
           )
-        (try! transfer-resp)
+        (try! (as-contract (stx-transfer? payout tx-sender caller)))
         ;; clear subscription
         (map-delete subscribers {account: tx-sender})
         (ok payout)
