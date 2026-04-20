@@ -1,4 +1,4 @@
-(define-data-var issuer principal 'SP3FBR2AGKJH9Q3D21D3XDS5SQGXYRBQBDG9EHWKY)  ;; Government issuer address
+(define-data-var issuer principal 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM)  ;; Government issuer address (deployer)
 (define-data-var sukuk-name (string-ascii 32) "Government Sukuk Fund")
 (define-data-var sukuk-symbol (string-ascii 8) "GSUKUK")
 (define-data-var sukuk-total-supply uint u0)   ;; Total sukuk issued
@@ -9,53 +9,54 @@
 ;; Map: subscriber principal => {amount-sukuk: uint, stx-paid: uint}
 (define-map subscribers {account: principal} {amount-sukuk: uint, stx-paid: uint})
 
-(define-constant ERR_NOT_ISSUER u100)
-(define-constant ERR_INSUFFICIENT_PAYMENT u101)
-(define-constant ERR_NO_SUBSCRIPTION u102)
-(define-constant ERR_NOT_MATURED u103)
-(define-constant ERR_ALREADY_SET_MATURITY u104)
+(define-constant ERR_NOT_ISSUER (err u100))
+(define-constant ERR_INSUFFICIENT_PAYMENT (err u101))
+(define-constant ERR_NO_SUBSCRIPTION (err u102))
+(define-constant ERR_NOT_MATURED (err u103))
+(define-constant ERR_ALREADY_SET_MATURITY (err u104))
 
 ;; Helper: only issuer
-(define-private (assert-issuer) (begin
-  (asserts! (is-eq tx-sender (var-get issuer)) ERR_NOT_ISSUER)
-  true))
+(define-private (assert-issuer)
+  (if (is-eq tx-sender (var-get issuer))
+      (ok true)
+      ERR_NOT_ISSUER))
 
 ;; Set sukuk parameters: maturity timestamp, total supply
 (define-public (configure-sukuk (maturity-block-height uint) (total-supply uint))
   (begin
-    (assert-issuer)
-    ;; maturity can only be set once
+    (try! (assert-issuer))
+    ;; maturity can only be set once - check if already set (ok means set, err means not set)
     (match (var-get sukuk-maturity)
-      success maturity (err ERR_ALREADY_SET_MATURITY)
-      error _ (ok (begin
+      ok-val ERR_ALREADY_SET_MATURITY
+      err-val (ok (begin
         (var-set sukuk-maturity (ok maturity-block-height))
         (var-set sukuk-total-supply total-supply)
-        success))))
+        true)))))
 
 ;; Public subscription: send STX and receive sukuk units
 (define-public (subscribe-sukuk)
   (let (
         (price (var-get sukuk-price))
-        (sent (contract-call? .stx-transfer? tx-sender (as-contract tx-sender) price))
+        (sent (stx-transfer? price tx-sender (as-contract tx-sender)))
        )
     (begin
-      (asserts! (is-ok sent) ERR_INSUFFICIENT_PAYMENT)
+      (unwrap! sent ERR_INSUFFICIENT_PAYMENT)
       (let (
             (current-subscribed (var-get total-subscribed))
             (new-total (+ current-subscribed price))
-            (unit-count (/ price price)) ;; always 1 sukuk per price
+            (unit-count u1) ;; always 1 sukuk per price
           )
         (var-set total-subscribed new-total)
-        (match (map-get subscribers {account: tx-sender})
+        (match (map-get? subscribers {account: tx-sender})
           entry (begin
                    (map-set subscribers {account: tx-sender}
                      { amount-sukuk: (+ (get amount-sukuk entry) unit-count)
                      , stx-paid:    (+ (get stx-paid entry) price) })
                    (ok unit-count))
-          none  (begin
-                  (map-insert subscribers {account: tx-sender}
-                     { amount-sukuk: unit-count, stx-paid: price })
-                  (ok unit-count))
+          (begin
+            (map-insert subscribers {account: tx-sender}
+               { amount-sukuk: unit-count, stx-paid: price })
+            (ok unit-count))
         )
       )
     )
@@ -65,36 +66,43 @@
 ;; Check maturity
 (define-read-only (is-matured)
   (match (var-get sukuk-maturity)
-    (ok m) (>= block-height m)
-    (err _) false)
+    ok-val (>= stacks-block-height ok-val)
+    err-val false))
 
 ;; Redeem sukuk after maturity: investor gets STX back plus profit share
 (define-public (redeem)
-  (begin
-    (asserts! (is-matured) ERR_NOT_MATURED)
-    (let (
-          (entry (map-get subscribers {account: tx-sender}))
-         )
-      (asserts! (is-some entry) ERR_NO_SUBSCRIPTION)
-      (let (
-            {amount-sukuk: units, stx-paid: paid} (unwrap! entry (err ERR_NO_SUBSCRIPTION))
-            ;; simple profit: 5% on principal
-            (profit (/ (* paid u5) u100))
-            (payout (+ paid profit))
-            (transfer-resp (contract-call? .stx-transfer? (as-contract tx-sender) tx-sender payout))
+  (if (not (is-matured))
+      ERR_NOT_MATURED
+      (let ((caller tx-sender))
+        (let ((entry-opt (map-get? subscribers {account: caller})))
+          (match entry-opt
+            entry (let (
+                        (units (get amount-sukuk entry))
+                        (paid (get stx-paid entry))
+                        ;; simple profit: 5% on principal
+                        (profit (/ (* paid u5) u100))
+                        (payout (+ paid profit))
+                        (transfer-resp (as-contract (stx-transfer? payout tx-sender caller)))
+                      )
+                    (if (is-err transfer-resp)
+                        ERR_INSUFFICIENT_PAYMENT
+                        (begin
+                          ;; clear subscription
+                          (map-delete subscribers {account: caller})
+                          (ok payout)
+                        )
+                    )
+                  )
+            ERR_NO_SUBSCRIPTION
           )
-        (asserts! (is-ok transfer-resp) transfer-resp)
-        ;; clear subscription
-        (map-delete subscribers {account: tx-sender})
-        (ok payout)
+        )
       )
-    )
   )
 )
 
 ;; View functions
 (define-read-only (get-subscriber (acct principal))
-  (map-get subscribers {account: acct}))
+  (map-get? subscribers {account: acct}))
 
 (define-read-only (get-total-subscribed)
   (var-get total-subscribed))
